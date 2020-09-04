@@ -1,0 +1,289 @@
+#include "simpletools.h"                      // Include simple tools
+#include "adcDCpropab.h"                      // Include adcDCpropab
+i2c *eeBus;
+#define Trig 1                                //Trigger for Ultrasonic sensor
+#define Echo 2                                //Echo pin for Ultrasonic sensor
+#define Pot  0                                //Potentiometer input 
+
+#define VIB 9                                 //Vibration motor output
+#define buzz 15                               //Buzzer output
+
+#define cfg_but 3                             //Configure mode button (push button)
+#define vib_but 4                             //Vibration configuation mode button (push button)
+
+int ping(int TrigPin, int EchoPin);
+int ping_cm(int TrigPin,int EchoPin);
+int ping_inches(int TrigPin,int EchoPin);
+int map(int var,int v_l1,int v_l2,int set_l1,int set_l2);
+int vibration_intensity(int dist, int min_d,int  max_d);
+
+void ultrasonicDistance(void *pauseTime);
+void potentiometerReading(void *par);
+void button_monitor();
+void config_vibrate();
+void configure();
+void main_fun();
+void button_m();
+void firstTime();
+static volatile int distance,potentiometer,pot_map_max_dist, pot_map_max_vib, max_dist, vib_max, config_button, vibrate_button;
+static volatile int cog_ultra, cog_pot_met, cog_buttons, cog_vib, cog_cnfg, cog_main, cog_button;
+static volatile float step_dist; 
+unsigned int stack1[40+25];
+unsigned int stack2[40+25];
+unsigned int stack3[40+25];
+unsigned int stack4[40+25];
+unsigned int stack5[40+25];
+unsigned int stack6[40+25];
+unsigned int stack7[40+25];
+static volatile int eeAddr = 0b1010000;
+static volatile int memAddr_max_dist = 32768;
+static volatile int memAddr_vib_max = 32773;
+static volatile int memAddr_firstTime = 32778;
+int check_val = 0;
+int main()                                    // Main function
+{
+  eeBus = i2c_newbus(28,  29,   0);           // Set up I2C bus, get bus ID
+  adc_init(21, 20, 19, 18);
+  int pauseT = 60;
+  i2c_in(eeBus,eeAddr,memAddr_firstTime,2,(char*) &check_val,4);
+  if (check_val!=1)
+  {
+    firstTime();
+  }
+        
+  i2c_in(eeBus, eeAddr, memAddr_max_dist,2,(char*) &max_dist,4);
+  i2c_in(eeBus, eeAddr, memAddr_vib_max,2,(char*) &vib_max,4);
+
+  cog_ultra = cogstart(&ultrasonicDistance, (void*)pauseT, stack1, sizeof(stack1));
+  cog_pot_met = cogstart(&potentiometerReading, NULL, stack2, sizeof(stack2));
+  cog_buttons = cogstart(&button_monitor, NULL, stack3, sizeof(stack3));  
+  cog_main = cogstart(&main_fun, NULL, stack6, sizeof(stack6));
+
+  while(1)                                    // Loop repeats indefinitely
+  {
+    putChar(HOME);                            // Cursor -> top-left "home"  
+    print("potentiometer value = %d%c\n",potentiometer,CLREOL);
+    print("distance measured = %d%c\n",distance,CLREOL);
+    print("max dist set= %d%c\n",max_dist,CLREOL);
+    print("max vib set= %d%c\n",vib_max,CLREOL);
+    print("Distance Button = %d%c\n",config_button,CLREOL);
+    print("Vibrate Button = %d%c\n", vibrate_button,CLREOL);
+    print("Vibration = %d%c\n", map(distance, 2, max_dist,vib_max,67),CLREOL);
+    pause(100);                               // Wait 1/10 s
+  }  
+}
+
+void firstTime()
+{
+  int val =50;
+  i2c_out(eeBus,eeAddr,memAddr_max_dist,2,(char*) &val,4);
+  while(i2c_busy(eeBus,eeAddr));
+  
+  val = 150;
+  i2c_out(eeBus,eeAddr,memAddr_vib_max,2,(char*) &val,4);
+  while(i2c_busy(eeBus,eeAddr));
+  
+  val = 1;
+  i2c_out(eeBus,eeAddr,memAddr_firstTime,2,(char*) &val,4);
+  while(i2c_busy(eeBus,eeAddr));
+}  
+
+void main_fun(){
+  while(1){
+    if(distance <= max_dist){
+      dac_ctr(VIB, 0, map(distance, 2, max_dist,vib_max,67));
+    }
+    else{
+      dac_ctr(VIB, 0, 0);      
+    }
+  }          
+}  
+
+
+
+void ultrasonicDistance(void *pauseTime)
+{
+  int pauseT = (int)pauseTime;
+  while(1)
+  {
+    distance = ping_cm(Trig,Echo);
+    pause(pauseT);
+  }    
+}   
+
+int ping(int TrigPin,int EchoPin)
+{
+  low(TrigPin);
+  pulse_out(TrigPin, 10);
+  return pulse_in(EchoPin, 1);
+}
+
+int ping_cm(int TrigPin,int EchoPin)
+{
+  long tEcho = ping(TrigPin,EchoPin);
+  int cmDist = tEcho / 58.0;
+  return cmDist;
+}
+
+
+
+
+
+int map(int var, int v_l1, int v_l2, int set_l1, int set_l2)
+{
+  float y;
+  float a = 1.0* (set_l1 - set_l2)/(v_l1 - v_l2);
+  float b = 1.0* (set_l1 - a*v_l1);
+  y = a* var + b;
+  return (int)y;
+}  
+int vibration_intensity(int dist, int min_d,int  max_d)
+{
+  step_dist = (max_d - min_d)/3.0;
+  int  intensity = 80;
+  if (dist*1.0 <= min_d*1.0+step_dist)
+  {
+    intensity = 150;
+  }
+  if ( dist*1.0 <= min_d*1.0+2.0*step_dist && dist*1.0 > min_d*1.0+step_dist)
+  {
+    intensity = 77;
+  }        
+    
+  if (dist*1.0 <= max_d && dist*1.0 > min_d*1.0+2.0*step_dist)
+  {
+    intensity = 68;
+  }  
+  return intensity; 
+  
+}
+  
+
+void potentiometerReading(void *par)
+{
+  while(1)                                    // Loop repeats indefinitely
+  {
+    potentiometer = adc_in(Pot);
+    pot_map_max_dist = map(potentiometer, 0,2650 ,30 ,300);
+    pot_map_max_vib = map(potentiometer, 0, 2650, 80, 230);
+    pause(10); 
+  }    
+}
+
+
+
+void configure(){
+  
+  cogstop(cog_main);
+  dac_ctr(VIB, 0, 0);
+  freqout(buzz, 500, 3000);
+  int flag = 0;
+  int i = 0;
+  while(config_button == 1);
+  int count = 0;
+  while(1){
+    if( (distance < pot_map_max_dist + 3) && (distance > pot_map_max_dist - 3))
+    {
+      flag = pot_map_max_dist;
+      dac_ctr(VIB, 0, 75);
+      freqout(buzz, 10, 5000);
+    }
+    else
+    {
+      dac_ctr(VIB, 0, 0);
+    }      
+    if(config_button == 1)
+    {
+      max_dist = flag;
+      freqout(buzz, 500, 3000);
+      i2c_out(eeBus,eeAddr,memAddr_max_dist,2,(char*)&max_dist,4);
+      while(i2c_busy(eeBus,eeAddr));
+      freqout(buzz, 500, 3000);
+      break;
+    }     
+    if(vibrate_button == 1)
+    {
+      freqout(buzz, 500, 4000);
+    }         
+   }
+     
+  cog_main = cogstart(&main_fun, NULL, stack6, sizeof(stack6));
+  cogstop(cog_cnfg);    
+}  
+
+
+
+void config_vibrate(){
+  cogstop(cog_main);
+  dac_ctr(VIB, 0, 0);
+  freqout(buzz, 500, 3000);
+  int flag = 0;
+  int i = 0;
+  while(vibrate_button == 1);
+  int count = 0;
+  while(1){
+      
+      
+    dac_ctr(VIB, 0, pot_map_max_vib);
+
+     
+    if(vibrate_button == 1)
+    {
+      vib_max = pot_map_max_vib;
+      freqout(buzz, 500, 3000);
+      i2c_out(eeBus,eeAddr,memAddr_vib_max,2,(char*) &vib_max,4);
+      while(i2c_busy(eeBus,eeAddr));
+      freqout(buzz, 500, 3000);
+
+      break;
+    } 
+    if(config_button == 1 ) {
+      freqout(buzz, 500, 4000);
+      break;
+    }            
+   }
+     
+  cog_main = cogstart(&main_fun, NULL, stack6, sizeof(stack6));
+  cogstop(cog_cnfg);    
+} 
+
+
+
+void button_m(){
+  while(1){
+  config_button = input(cfg_but);
+  vibrate_button = input(vib_but);
+  }  
+}  
+
+
+
+void button_monitor(){
+  cog_button = cogstart(&button_m, NULL, stack7, sizeof(stack7));
+  
+  while(1){
+  if(config_button == 1){
+    for(int i = 0; i <= 100; i++){
+     pause(10);
+     if(config_button != 1){
+      break;
+     }       
+    }
+    if(config_button==1){
+      cog_cnfg = cogstart(&configure, NULL, stack4, sizeof(stack4));
+    }    
+  } 
+   if(vibrate_button == 1){
+    for(int i = 0; i <= 100; i++){
+     pause(10);
+     if(vibrate_button != 1){
+      break;
+     }       
+    }
+    if(vibrate_button==1){
+      cog_vib = cogstart(&config_vibrate, NULL, stack5, sizeof(stack5));
+    }    
+  } 
+ 
+  }      
+}
